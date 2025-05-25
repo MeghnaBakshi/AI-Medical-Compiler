@@ -1,280 +1,393 @@
+#Testing Code
+
+import os
 import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
 import tensorflow as tf
-from tensorflow import keras
-import random
-import copy
-import cv2
-from typing import List, Tuple, Dict
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import img_to_array
+from sklearn.preprocessing import LabelEncoder
+from tkinter import filedialog, Tk
 
-class MedicalImageCompiler:
-    def _init_(self, 
-                 population_size: int = 50, 
-                 max_generations: int = 100, 
-                 mutation_rate: float = 0.1):
-        """
-        Initialize the AI-powered medical image analysis compiler
-        
-        Args:
-            population_size: Number of individuals in GA population
-            max_generations: Maximum number of evolutionary generations
-            mutation_rate: Probability of genetic mutation
-        """
-        self.population_size = population_size
-        self.max_generations = max_generations
-        self.mutation_rate = mutation_rate
-        
-        # Compiler optimization parameters
-        self.compilation_parameters = {
-            'learning_rate': (0.0001, 0.1),
-            'batch_size': (16, 256),
-            'optimizer_type': ['adam', 'rmsprop', 'sgd'],
-            'layer_types': ['conv2d', 'dense', 'dropout'],
-            'activation_functions': ['relu', 'selu', 'elu']
-        }
+# --- Configuration ---
+SAVED_MODEL_PATH = "models/brain_tumor_detector_faster.keras"  # Update this path if needed
+IMAGE_SIZE = 128
+CLASS_LABELS = sorted(['glioma', 'meningioma', 'notumor', 'pituitary'])
 
-    def initialize_population(self) -> List[Dict]:
-        """
-        Generate initial population of compiler optimization configurations
-        
-        Returns:
-            List of individual optimization configurations
-        """
-        population = []
-        for _ in range(self.population_size):
-            individual = {
-                'learning_rate': random.uniform(*self.compilation_parameters['learning_rate']),
-                'batch_size': random.randint(*self.compilation_parameters['batch_size']),
-                'optimizer': random.choice(self.compilation_parameters['optimizer_type']),
-                'layer_config': self._generate_layer_configuration()
-            }
-            population.append(individual)
-        return population
+print(f"Using CLASS_LABELS: {CLASS_LABELS}")
 
-    def _generate_layer_configuration(self) -> List[Dict]:
-        """
-        Generate a random neural network layer configuration
-        
-        Returns:
-            List of layer configurations
-        """
-        num_layers = random.randint(3, 7)
-        layers = []
-        for _ in range(num_layers):
-            layer_type = random.choice(self.compilation_parameters['layer_types'])
-            layer_config = {
-                'type': layer_type,
-                'activation': random.choice(self.compilation_parameters['activation_functions'])
-            }
-            
-            if layer_type == 'conv2d':
-                layer_config.update({
-                    'filters': random.randint(32, 256),
-                    'kernel_size': random.choice([(3,3), (5,5)])
-                })
-            elif layer_type == 'dense':
-                layer_config['units'] = random.randint(64, 512)
-            
-            layers.append(layer_config)
-        return layers
+# --- Optional: Enable Mixed Precision (if used during training) ---
+try:
+    from tensorflow.keras import mixed_precision
+    policy = mixed_precision.Policy('mixed_float16')
+    mixed_precision.set_global_policy(policy)
+    print(f"Mixed precision policy set to: {mixed_precision.global_policy().name}")
+except ImportError:
+    print("Mixed precision not available or not used.")
 
-    def fitness_evaluation(self, 
-                           individual: Dict, 
-                           X_train: np.ndarray, 
-                           y_train: np.ndarray, 
-                           X_val: np.ndarray, 
-                           y_val: np.ndarray) -> float:
-        """
-        Evaluate fitness of an individual configuration
-        
-        Args:
-            individual: Compiler configuration
-            X_train: Training medical images
-            y_train: Training labels
-            X_val: Validation medical images
-            y_val: Validation labels
-        
-        Returns:
-            Fitness score (lower is better)
-        """
-        try:
-            model = self._build_model(individual)
-            
-            # Compile model with individual's parameters
-            optimizer = self._get_optimizer(individual['optimizer'], individual['learning_rate'])
-            model.compile(optimizer=optimizer, 
-                          loss='categorical_crossentropy', 
-                          metrics=['accuracy'])
-            
-            # Train and evaluate
-            history = model.fit(
-                X_train, y_train, 
-                batch_size=individual['batch_size'], 
-                epochs=10, 
-                validation_data=(X_val, y_val),
-                verbose=0
-            )
-            
-            # Multi-objective fitness: minimize validation loss and maximize accuracy
-            val_loss = history.history['val_loss'][-1]
-            val_accuracy = history.history['val_accuracy'][-1]
-            
-            # Fitness calculation with weighted objectives
-            fitness = val_loss - val_accuracy
-            return fitness
-        
-        except Exception as e:
-            print(f"Fitness evaluation error: {e}")
-            return float('inf')
+# --- Prediction Function ---
+def predict_new_image(image_path, model_to_use, image_size_const, class_labels_list):
+    if not os.path.exists(image_path):
+        print(f"Error: Image path not found: {image_path}")
+        return
 
-    def _build_model(self, individual: Dict) -> keras.Model:
-        """
-        Construct neural network based on individual configuration
-        
-        Args:
-            individual: Compiler configuration
-        
-        Returns:
-            Compiled Keras model
-        """
-        model = keras.Sequential()
-        
-        # Input layer for medical images (assume 256x256x3)
-        model.add(keras.layers.Input(shape=(256, 256, 3)))
-        
-        for layer_config in individual['layer_config']:
-            if layer_config['type'] == 'conv2d':
-                model.add(keras.layers.Conv2D(
-                    filters=layer_config.get('filters', 64),
-                    kernel_size=layer_config.get('kernel_size', (3,3)),
-                    activation=layer_config['activation']
-                ))
-            elif layer_config['type'] == 'dense':
-                model.add(keras.layers.Dense(
-                    units=layer_config.get('units', 128),
-                    activation=layer_config['activation']
-                ))
-            elif layer_config['type'] == 'dropout':
-                model.add(keras.layers.Dropout(0.3))
-        
-        # Output layer for medical image classification
-        model.add(keras.layers.Dense(4, activation='softmax'))
-        
-        return model
+    try:
+        img_pil = Image.open(image_path).convert('RGB')
+        img_pil_resized = img_pil.resize((image_size_const, image_size_const), Image.Resampling.LANCZOS)
+        img_array_normalized = img_to_array(img_pil_resized) / 255.0
+        img_batch = np.expand_dims(img_array_normalized, axis=0)
 
-    def _get_optimizer(self, optimizer_type: str, learning_rate: float):
-        """
-        Select and configure optimizer
-        
-        Args:
-            optimizer_type: Type of optimizer
-            learning_rate: Learning rate
-        
-        Returns:
-            Keras optimizer
-        """
-        optimizers = {
-            'adam': keras.optimizers.Adam(learning_rate=learning_rate),
-            'rmsprop': keras.optimizers.RMSprop(learning_rate=learning_rate),
-            'sgd': keras.optimizers.SGD(learning_rate=learning_rate)
-        }
-        return optimizers.get(optimizer_type)
+        predictions_probabilities = model_to_use.predict(img_batch)
+        predicted_class_index = np.argmax(predictions_probabilities, axis=1)[0]
+        confidence_score = np.max(predictions_probabilities, axis=1)[0]
 
-    def genetic_optimization(self, 
-                              X_train: np.ndarray, 
-                              y_train: np.ndarray, 
-                              X_val: np.ndarray, 
-                              y_val: np.ndarray) -> Dict:
-        """
-        Genetic Algorithm optimization process
-        
-        Args:
-            X_train: Training medical images
-            y_train: Training labels
-            X_val: Validation medical images
-            y_val: Validation labels
-        
-        Returns:
-            Best optimized configuration
-        """
-        population = self.initialize_population()
-        
-        for generation in range(self.max_generations):
-            # Evaluate fitness
-            fitness_scores = [
-                self.fitness_evaluation(ind, X_train, y_train, X_val, y_val) 
-                for ind in population
-            ]
-            
-            # Selection
-            selected = [population[np.argmin(fitness_scores)]]
-            
-            # Crossover and Mutation
-            while len(selected) < self.population_size:
-                parent1, parent2 = random.sample(population, 2)
-                child = self._crossover(parent1, parent2)
-                child = self._mutate(child)
-                selected.append(child)
-            
-            population = selected
-        
-        return population[0]
+        le = LabelEncoder()
+        le.fit(class_labels_list)
+        predicted_label_str = le.inverse_transform([predicted_class_index])[0]
 
-    def _crossover(self, parent1: Dict, parent2: Dict) -> Dict:
-        """
-        Perform crossover between two parent configurations
-        
-        Args:
-            parent1: First parent configuration
-            parent2: Second parent configuration
-        
-        Returns:
-            Child configuration
-        """
-        child = copy.deepcopy(parent1)
-        
-        # Randomly swap parameters
-        if random.random() < 0.5:
-            child['learning_rate'] = parent2['learning_rate']
-        if random.random() < 0.5:
-            child['batch_size'] = parent2['batch_size']
-        if random.random() < 0.5:
-            child['optimizer'] = parent2['optimizer']
-        
-        return child
+        plt.figure(figsize=(7, 7))
+        plt.imshow(img_pil_resized)
+        plt.axis('off')
 
-    def _mutate(self, individual: Dict) -> Dict:
-        """
-        Introduce random mutations in configuration
-        
-        Args:
-            individual: Configuration to mutate
-        
-        Returns:
-            Mutated configuration
-        """
-        if random.random() < self.mutation_rate:
-            individual['learning_rate'] = random.uniform(
-                *self.compilation_parameters['learning_rate']
-            )
-        
-        if random.random() < self.mutation_rate:
-            individual['batch_size'] = random.randint(
-                *self.compilation_parameters['batch_size']
-            )
-        
-        return individual
+        title_text = f"Prediction: {predicted_label_str}\nConfidence: {confidence_score*100:.2f}%"
+        if predicted_label_str.lower() == 'notumor':
+            title_text = f"Prediction: No Tumor Detected\nConfidence: {confidence_score*100:.2f}%"
 
-# Example usage
-def main():
-    # Simulate medical image dataset
-    X_train = np.random.rand(1000, 256, 256, 3)  # Training images
-    y_train = keras.utils.to_categorical(np.random.randint(4, size=(1000, 1)))  # Labels
-    X_val = np.random.rand(200, 256, 256, 3)    # Validation images
-    y_val = keras.utils.to_categorical(np.random.randint(4, size=(200, 1)))  # Validation labels
+        plt.title(title_text, fontsize=14, pad=10)
+        plt.show()
 
-    compiler = MedicalImageCompiler()
-    best_configuration = compiler.genetic_optimization(X_train, y_train, X_val, y_val)
-    print("Optimized Compiler Configuration:", best_configuration)
+        print(f"--- Prediction Details ---")
+        print(f"Image: {os.path.basename(image_path)}")
+        print(f"Predicted Class: {predicted_label_str}")
+        print(f"Confidence Score: {confidence_score*100:.2f}%")
+        print("\nProbabilities for each class:")
+        for i, label in enumerate(class_labels_list):
+            print(f"  - {label}: {predictions_probabilities[0][i]*100:.2f}%")
 
+    except Exception as e:
+        print(f"Error processing or predicting image {image_path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+# --- Main Execution ---
 if _name_ == "_main_":
-    main()
+    if os.path.exists(SAVED_MODEL_PATH):
+        print(f"Loading saved model from: {SAVED_MODEL_PATH}...")
+        try:
+            loaded_brain_tumor_model = load_model(SAVED_MODEL_PATH)
+            print("Model loaded successfully.")
+            loaded_brain_tumor_model.summary()
+
+            print("Select a brain MRI image file...")
+            Tk().withdraw()  # Hide the root tkinter window
+            new_image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")])
+
+            if not new_image_path:
+                print("No file selected. Exiting.")
+            else:
+                print(f"Selected file: {new_image_path}")
+                predict_new_image(new_image_path, loaded_brain_tumor_model, IMAGE_SIZE, CLASS_LABELS)
+
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"CRITICAL ERROR: Model file not found at {SAVED_MODEL_PATH}")
+        print("Please ensure the path is correct and the model file exists.")
+
+
+#Training Code
+# Run the Google Drive Mount cell (Cell 1) BEFORE running this main script cell.
+
+import os
+import numpy as np
+import random
+import matplotlib.pyplot as plt
+from PIL import Image, ImageEnhance # Pillow library
+import seaborn as sns # For better visualizations
+
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import Input, Flatten, Dropout, Dense
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.applications import VGG16 # Using VGG16 for transfer learning
+from sklearn.utils import shuffle
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.preprocessing import LabelEncoder # For converting string labels to numbers
+
+# --- OPTIMIZATION: Enable Mixed Precision Training ---
+# This can speed up training on compatible GPUs (like T4) and reduce memory.
+# Must be done at the beginning of your script.
+from tensorflow.keras import mixed_precision
+policy = mixed_precision.Policy('mixed_float16')
+mixed_precision.set_global_policy(policy)
+print(f"Mixed precision policy set to: {mixed_precision.global_policy().name}")
+# --- End OPTIMIZATION ---
+
+# --- Step 1: Define Dataset Path (POINTING TO GOOGLE DRIVE) ---
+dataset_base_path = "D:\Training and Testing"
+print(f"Using dataset from Google Drive: {dataset_base_path}")
+
+# --- Debugging: Check contents of dataset_base_path ---
+print(f"Checking contents of: {dataset_base_path}")
+if os.path.exists(dataset_base_path) and os.path.isdir(dataset_base_path):
+    print(f"Contents of {dataset_base_path}: {os.listdir(dataset_base_path)}")
+else:
+    print(f"ERROR: The base path {dataset_base_path} on Google Drive does not exist or is not a directory.")
+    print(f"Please ensure you have uploaded the 'archive' folder to your Google Drive's main 'My Drive' area and the path is correct.")
+# --- End Debugging ---
+
+
+# --- Step 2: Define Constants and Prepare Paths ---
+IMAGE_SIZE = 128
+# --- OPTIMIZATION: Increased Batch Size ---
+BATCH_SIZE = 64   # Increased from 32 to potentially speed up epoch time
+# --- End OPTIMIZATION ---
+EPOCHS = 15
+
+train_dir = os.path.join(dataset_base_path, 'Training')
+test_dir = os.path.join(dataset_base_path, 'Testing')
+
+print(f"Attempting Training directory: {train_dir}")
+print(f"Attempting Testing directory: {test_dir}")
+
+if not os.path.exists(train_dir):
+    print(f"CRITICAL ERROR: Training directory not found at {train_dir}")
+if not os.path.exists(test_dir):
+    print(f"CRITICAL ERROR: Testing directory not found at {test_dir}")
+
+CLASS_LABELS = []
+NUM_CLASSES = 0
+if os.path.exists(train_dir) and os.path.isdir(train_dir):
+    CLASS_LABELS = sorted(os.listdir(train_dir))
+    NUM_CLASSES = len(CLASS_LABELS)
+    if NUM_CLASSES == 0:
+        print(f"CRITICAL ERROR: No class subdirectories found in {train_dir}.")
+    else:
+        print(f"Found {NUM_CLASSES} classes: {CLASS_LABELS}")
+else:
+    print(f"CRITICAL ERROR: Training directory {train_dir} does not exist or is not a directory.")
+
+
+# --- Step 3: Data Loading and Path Collection ---
+print("Loading and shuffling data paths...")
+train_paths = []
+train_labels_str = []
+
+if NUM_CLASSES > 0:
+    for label in CLASS_LABELS:
+        class_path = os.path.join(train_dir, label)
+        if os.path.isdir(class_path):
+            for image_file in os.listdir(class_path):
+                image_path = os.path.join(class_path, image_file)
+                if image_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tif', '.tiff')):
+                    train_paths.append(image_path)
+                    train_labels_str.append(label)
+    train_paths, train_labels_str = shuffle(train_paths, train_labels_str, random_state=42)
+
+test_paths = []
+test_labels_str = []
+if NUM_CLASSES > 0:
+    for label in CLASS_LABELS:
+        class_path = os.path.join(test_dir, label)
+        if os.path.isdir(class_path):
+            for image_file in os.listdir(class_path):
+                image_path = os.path.join(class_path, image_file)
+                if image_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tif', '.tiff')):
+                    test_paths.append(image_path)
+                    test_labels_str.append(label)
+    test_paths, test_labels_str = shuffle(test_paths, test_labels_str, random_state=42)
+
+if not train_paths: print("CRITICAL ERROR: No training images were found.")
+if not test_paths: print("CRITICAL ERROR: No testing images were found.")
+
+if train_paths and test_paths:
+    print(f"Total training images found: {len(train_paths)}")
+    print(f"Total testing images found: {len(test_paths)}")
+
+# --- Step 4: Image Augmentation and Preprocessing Functions ---
+def augment_image(image_pil):
+    enhancer = ImageEnhance.Brightness(image_pil)
+    image_pil = enhancer.enhance(random.uniform(0.7, 1.3))
+    enhancer = ImageEnhance.Contrast(image_pil)
+    image_pil = enhancer.enhance(random.uniform(0.7, 1.3))
+    image_array = img_to_array(image_pil) / 255.0
+    return image_array
+
+def open_images(paths_list, augment=False):
+    images = []
+    for path in paths_list:
+        try:
+            image_pil = load_img(path, target_size=(IMAGE_SIZE, IMAGE_SIZE))
+            if augment:
+                image_processed_array = augment_image(image_pil)
+            else:
+                image_processed_array = img_to_array(image_pil) / 255.0
+            images.append(image_processed_array)
+        except Exception as e:
+            print(f"Warning: Could not load or process image {path}. Error: {e}")
+    return np.array(images)
+
+# --- Step 5: Label Encoding ---
+label_encoder = LabelEncoder()
+if CLASS_LABELS:
+    label_encoder.fit(CLASS_LABELS)
+    train_labels_encoded = label_encoder.transform(train_labels_str)
+    test_labels_encoded = label_encoder.transform(test_labels_str)
+else:
+    train_labels_encoded = np.array([])
+    test_labels_encoded = np.array([])
+
+# --- Step 6: Data Generator ---
+def datagen(current_paths, current_string_labels, current_label_encoder, batch_size=BATCH_SIZE, do_augment=True):
+    num_samples = len(current_paths)
+    if num_samples == 0: yield (np.array([]), np.array([])); return
+    while True:
+        shuffled_paths, shuffled_string_labels = shuffle(current_paths, current_string_labels)
+        for offset in range(0, num_samples, batch_size):
+            batch_paths = shuffled_paths[offset:offset+batch_size]
+            batch_images_array = open_images(batch_paths, augment=do_augment)
+            batch_labels_s = shuffled_string_labels[offset:offset+batch_size]
+            if CLASS_LABELS:
+                batch_labels_e = current_label_encoder.transform(batch_labels_s)
+            else:
+                batch_labels_e = np.array([])
+            if batch_images_array.shape[0] > 0:
+                 yield batch_images_array, batch_labels_e
+            elif num_samples > 0 :
+                 yield (np.array([]), np.array([]))
+
+# --- Step 7: Display Sample Images (Optional) ---
+if train_paths and CLASS_LABELS:
+    print("Displaying a few sample training images...")
+    temp_train_gen_for_display = datagen(train_paths, train_labels_str, label_encoder, batch_size=min(10, BATCH_SIZE), do_augment=True)
+    sample_images_batch, sample_labels_batch_encoded = next(temp_train_gen_for_display)
+    if sample_images_batch.shape[0] > 0:
+        sample_labels_batch_str = label_encoder.inverse_transform(sample_labels_batch_encoded)
+        fig, axes = plt.subplots(2, 5, figsize=(15, 7))
+        axes = axes.ravel()
+        for i in range(min(len(sample_images_batch), 10)):
+            if i < len(axes):
+                axes[i].imshow(sample_images_batch[i])
+                axes[i].set_title(f"Label: {sample_labels_batch_str[i]}", fontsize=10)
+                axes[i].axis('off')
+        plt.tight_layout(); plt.show()
+
+# --- Step 8: Build the Model (VGG16 Transfer Learning) ---
+if NUM_CLASSES > 0:
+    print("Building the model...")
+    base_model_vgg16 = VGG16(input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3),
+                             include_top=False, weights='imagenet')
+    for layer in base_model_vgg16.layers: layer.trainable = False
+    if len(base_model_vgg16.layers) > 4:
+        for layer in base_model_vgg16.layers[-4:]: layer.trainable = True
+    else:
+        for layer in base_model_vgg16.layers: layer.trainable = True
+
+    model = Sequential([
+        Input(shape=(IMAGE_SIZE, IMAGE_SIZE, 3)),
+        base_model_vgg16,
+        Flatten(),
+        Dropout(0.5),
+        Dense(256, activation='relu'),
+        Dropout(0.4),
+        # --- OPTIMIZATION: Ensure output layer uses float32 for stability with mixed precision ---
+        Dense(NUM_CLASSES, activation='softmax', dtype='float32')
+        # --- End OPTIMIZATION ---
+    ])
+
+    # --- Step 9: Compile the Model ---
+    print("Compiling the model...")
+    # When using mixed precision, the optimizer should handle scaling the loss.
+    # Adam optimizer is generally fine.
+    model.compile(optimizer=Adam(learning_rate=0.0001), # Consider if LR needs adjustment with larger batch
+                  loss='sparse_categorical_crossentropy',
+                  metrics=['sparse_categorical_accuracy'])
+    model.summary()
+
+    # --- Step 10: Train the Model ---
+    if train_paths and test_paths:
+        print("Starting model training...")
+        steps_per_epoch = len(train_paths) // BATCH_SIZE
+        if len(train_paths) % BATCH_SIZE != 0: steps_per_epoch += 1
+        train_generator = datagen(train_paths, train_labels_str, label_encoder, batch_size=BATCH_SIZE, do_augment=True)
+        validation_generator = datagen(test_paths, test_labels_str, label_encoder, batch_size=BATCH_SIZE, do_augment=False)
+        validation_steps = len(test_paths) // BATCH_SIZE
+        if len(test_paths) % BATCH_SIZE != 0: validation_steps += 1
+        
+        if steps_per_epoch > 0 and validation_steps > 0 :
+            history = model.fit(
+                train_generator, epochs=EPOCHS, steps_per_epoch=steps_per_epoch,
+                validation_data=validation_generator, validation_steps=validation_steps,
+                verbose=1
+            )
+            print("Model training finished.")
+
+            # --- Step 11: Evaluate the Model ---
+            print("Evaluating the model...")
+            final_loss, final_accuracy = model.evaluate(validation_generator, steps=validation_steps, verbose=0)
+            print(f"\nFinal Test Loss: {final_loss:.4f}")
+            print(f"Final Test Accuracy: {final_accuracy*100:.2f}%")
+
+            X_test_eval = open_images(test_paths, augment=False)
+            if X_test_eval.shape[0] > 0:
+                test_predictions_probs = model.predict(X_test_eval)
+                test_predictions_classes = np.argmax(test_predictions_probs, axis=1)
+                print("\nClassification Report:")
+                print(classification_report(test_labels_encoded, test_predictions_classes, target_names=CLASS_LABELS))
+                conf_matrix = confusion_matrix(test_labels_encoded, test_predictions_classes)
+                plt.figure(figsize=(10, 8)); sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues",
+                            xticklabels=CLASS_LABELS, yticklabels=CLASS_LABELS, annot_kws={"size": 12})
+                plt.title("Confusion Matrix", fontsize=16); plt.xlabel("Predicted Labels", fontsize=14); plt.ylabel("True Labels", fontsize=14)
+                plt.xticks(rotation=45, ha="right"); plt.yticks(rotation=0); plt.tight_layout(); plt.show()
+
+            if history and history.history:
+                plt.figure(figsize=(14, 6))
+                plt.subplot(1, 2, 1)
+                if 'sparse_categorical_accuracy' in history.history: plt.plot(history.history['sparse_categorical_accuracy'], 'o-', lw=2, label='Train Acc')
+                if 'val_sparse_categorical_accuracy' in history.history: plt.plot(history.history['val_sparse_categorical_accuracy'], 'o-', lw=2, label='Val Acc')
+                plt.title('Accuracy', fontsize=16); plt.xlabel('Epoch', fontsize=14); plt.ylabel('Accuracy', fontsize=14)
+                plt.legend(fontsize=12); plt.grid(True); plt.xticks(range(0, EPOCHS, max(1, EPOCHS//10)))
+                plt.subplot(1, 2, 2)
+                if 'loss' in history.history: plt.plot(history.history['loss'], 'o-', lw=2, label='Train Loss')
+                if 'val_loss' in history.history: plt.plot(history.history['val_loss'], 'o-', lw=2, label='Val Loss')
+                plt.title('Loss', fontsize=16); plt.xlabel('Epoch', fontsize=14); plt.ylabel('Loss', fontsize=14)
+                plt.legend(fontsize=12); plt.grid(True); plt.xticks(range(0, EPOCHS, max(1, EPOCHS//10)))
+                plt.tight_layout(); plt.show()
+
+            # --- Step 12: Save the Model ---
+            model_save_dir = "D:/College/Output/"
+            if not os.path.exists(model_save_dir): os.makedirs(model_save_dir)
+            model_save_path = os.path.join(model_save_dir, 'brain_tumor_detector_faster.keras')
+            print(f"Saving model to {model_save_path}...")
+            try: model.save(model_save_path); print(f"Model saved to {model_save_path}")
+            except Exception as e: print(f"Error saving model: {e}")
+
+            # --- Step 13: Example Prediction ---
+            print("\n--- Example Prediction ---")
+            if os.path.exists(model_save_path) and test_paths:
+                try:
+                    loaded_model = load_model(model_save_path)
+                    print("Model loaded.")
+                    def predict_single_image(img_path, model_to_use, image_size_const=IMAGE_SIZE, class_labels_list=CLASS_LABELS, current_label_encoder=label_encoder):
+                        if not os.path.exists(img_path): print(f"Err: No img: {img_path}"); return
+                        try:
+                            img_pil = load_img(img_path, target_size=(image_size_const, image_size_const))
+                            img_arr_norm = img_to_array(img_pil)/255.0; img_batch = np.expand_dims(img_arr_norm, axis=0)
+                            pred_probs = model_to_use.predict(img_batch)
+                            pred_idx = np.argmax(pred_probs, axis=1)[0]; conf = np.max(pred_probs, axis=1)[0]
+                            pred_label = current_label_encoder.inverse_transform([pred_idx])[0]
+                            plt.figure(figsize=(6,6)); plt.imshow(img_pil); plt.axis('off')
+                            title = f"Pred: {pred_label}\nConf: {conf*100:.2f}%"
+                            if pred_label.lower() == 'notumor': title = f"Pred: No Tumor\nConf: {conf*100:.2f}%"
+                            plt.title(title, fontsize=12); plt.show()
+                        except Exception as e: print(f"Err pred img {img_path}: {e}")
+                    predict_single_image(random.choice(test_paths), loaded_model)
+                except Exception as e: print(f"Err loading/pred model: {e}")
+        else: print("Skipping training: steps_per_epoch or validation_steps is zero.")
+    else: print("Skipping training: data not loaded.")
+else: print("Skipping model build/train: no classes.")
+print("\n--- Project Script Finished ---")
