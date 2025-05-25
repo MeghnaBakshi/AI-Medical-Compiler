@@ -1,0 +1,96 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import img_to_array
+from sklearn.preprocessing import LabelEncoder
+from tkinter import filedialog, Tk
+
+# --- Configuration ---
+SAVED_MODEL_PATH = "models/brain_tumor_detector_faster.keras"  # Update this path if needed
+IMAGE_SIZE = 128
+CLASS_LABELS = sorted(['glioma', 'meningioma', 'notumor', 'pituitary'])
+
+print(f"Using CLASS_LABELS: {CLASS_LABELS}")
+
+# --- Optional: Enable Mixed Precision (if used during training) ---
+try:
+    from tensorflow.keras import mixed_precision
+    policy = mixed_precision.Policy('mixed_float16')
+    mixed_precision.set_global_policy(policy)
+    print(f"Mixed precision policy set to: {mixed_precision.global_policy().name}")
+except ImportError:
+    print("Mixed precision not available or not used.")
+
+# --- Prediction Function ---
+def predict_new_image(image_path, model_to_use, image_size_const, class_labels_list):
+    if not os.path.exists(image_path):
+        print(f"Error: Image path not found: {image_path}")
+        return
+
+    try:
+        img_pil = Image.open(image_path).convert('RGB')
+        img_pil_resized = img_pil.resize((image_size_const, image_size_const), Image.Resampling.LANCZOS)
+        img_array_normalized = img_to_array(img_pil_resized) / 255.0
+        img_batch = np.expand_dims(img_array_normalized, axis=0)
+
+        predictions_probabilities = model_to_use.predict(img_batch)
+        predicted_class_index = np.argmax(predictions_probabilities, axis=1)[0]
+        confidence_score = np.max(predictions_probabilities, axis=1)[0]
+
+        le = LabelEncoder()
+        le.fit(class_labels_list)
+        predicted_label_str = le.inverse_transform([predicted_class_index])[0]
+
+        plt.figure(figsize=(7, 7))
+        plt.imshow(img_pil_resized)
+        plt.axis('off')
+
+        title_text = f"Prediction: {predicted_label_str}\nConfidence: {confidence_score*100:.2f}%"
+        if predicted_label_str.lower() == 'notumor':
+            title_text = f"Prediction: No Tumor Detected\nConfidence: {confidence_score*100:.2f}%"
+
+        plt.title(title_text, fontsize=14, pad=10)
+        plt.show()
+
+        print(f"--- Prediction Details ---")
+        print(f"Image: {os.path.basename(image_path)}")
+        print(f"Predicted Class: {predicted_label_str}")
+        print(f"Confidence Score: {confidence_score*100:.2f}%")
+        print("\nProbabilities for each class:")
+        for i, label in enumerate(class_labels_list):
+            print(f"  - {label}: {predictions_probabilities[0][i]*100:.2f}%")
+
+    except Exception as e:
+        print(f"Error processing or predicting image {image_path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+# --- Main Execution ---
+if _name_ == "_main_":
+    if os.path.exists(SAVED_MODEL_PATH):
+        print(f"Loading saved model from: {SAVED_MODEL_PATH}...")
+        try:
+            loaded_brain_tumor_model = load_model(SAVED_MODEL_PATH)
+            print("Model loaded successfully.")
+            loaded_brain_tumor_model.summary()
+
+            print("Select a brain MRI image file...")
+            Tk().withdraw()  # Hide the root tkinter window
+            new_image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")])
+
+            if not new_image_path:
+                print("No file selected. Exiting.")
+            else:
+                print(f"Selected file: {new_image_path}")
+                predict_new_image(new_image_path, loaded_brain_tumor_model, IMAGE_SIZE, CLASS_LABELS)
+
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"CRITICAL ERROR: Model file not found at {SAVED_MODEL_PATH}")
+        print("Please ensure the path is correct and the model file exists.")
