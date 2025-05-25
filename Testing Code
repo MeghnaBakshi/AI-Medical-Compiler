@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
@@ -6,16 +7,16 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import img_to_array
 from sklearn.preprocessing import LabelEncoder
-from tkinter import filedialog, Tk
+from sklearn.metrics import accuracy_score, classification_report
+import subprocess
 
 # --- Configuration ---
-SAVED_MODEL_PATH = "models/brain_tumor_detector_faster.keras"  # Update this path if needed
+SAVED_MODEL_PATH = "D:/College/Law sir/trained_model/Brain_Tumor_Trained_Model .keras"
 IMAGE_SIZE = 128
 CLASS_LABELS = sorted(['glioma', 'meningioma', 'notumor', 'pituitary'])
+TEST_DIR = "D:/Training and Testing/Testing"
 
-print(f"Using CLASS_LABELS: {CLASS_LABELS}")
-
-# --- Optional: Enable Mixed Precision (if used during training) ---
+# --- Optional: Enable Mixed Precision ---
 try:
     from tensorflow.keras import mixed_precision
     policy = mixed_precision.Policy('mixed_float16')
@@ -24,7 +25,7 @@ try:
 except ImportError:
     print("Mixed precision not available or not used.")
 
-# --- Prediction Function ---
+# --- Predict Single Image ---
 def predict_new_image(image_path, model_to_use, image_size_const, class_labels_list):
     if not os.path.exists(image_path):
         print(f"Error: Image path not found: {image_path}")
@@ -36,7 +37,15 @@ def predict_new_image(image_path, model_to_use, image_size_const, class_labels_l
         img_array_normalized = img_to_array(img_pil_resized) / 255.0
         img_batch = np.expand_dims(img_array_normalized, axis=0)
 
+        start_time = time.time()
         predictions_probabilities = model_to_use.predict(img_batch)
+        end_time = time.time()
+        inference_time_ms = (end_time - start_time) * 1000
+
+        model_size_bytes = os.path.getsize(SAVED_MODEL_PATH)
+        model_size_mb = model_size_bytes / (1024 * 1024)
+        fps = 1000 / inference_time_ms if inference_time_ms > 0 else 0
+
         predicted_class_index = np.argmax(predictions_probabilities, axis=1)[0]
         confidence_score = np.max(predictions_probabilities, axis=1)[0]
 
@@ -47,15 +56,13 @@ def predict_new_image(image_path, model_to_use, image_size_const, class_labels_l
         plt.figure(figsize=(7, 7))
         plt.imshow(img_pil_resized)
         plt.axis('off')
-
         title_text = f"Prediction: {predicted_label_str}\nConfidence: {confidence_score*100:.2f}%"
         if predicted_label_str.lower() == 'notumor':
             title_text = f"Prediction: No Tumor Detected\nConfidence: {confidence_score*100:.2f}%"
-
         plt.title(title_text, fontsize=14, pad=10)
         plt.show()
 
-        print(f"--- Prediction Details ---")
+        print(f"\n--- Prediction Details ---")
         print(f"Image: {os.path.basename(image_path)}")
         print(f"Predicted Class: {predicted_label_str}")
         print(f"Confidence Score: {confidence_score*100:.2f}%")
@@ -63,29 +70,83 @@ def predict_new_image(image_path, model_to_use, image_size_const, class_labels_l
         for i, label in enumerate(class_labels_list):
             print(f"  - {label}: {predictions_probabilities[0][i]*100:.2f}%")
 
+        # Performance Metrics
+        print("\n--- Performance Metrics ---")
+        print(f"Inference Time: {inference_time_ms:.2f} ms")
+        print(f"Model Size: {model_size_mb:.2f} MB")
+        print(f"Estimated FPS: {fps:.2f}")
+        try:
+            mem_info = tf.config.experimental.get_memory_info('GPU:0')
+            print(f"GPU Memory Usage: {mem_info['current'] / (1024 * 1024):.2f} MB")
+        except:
+            print("GPU Memory Usage: Not available.")
+
+        try:
+            power_output = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=power.draw", "--format=csv,noheader,nounits"]
+            )
+            print(f"Power Consumption: {float(power_output.decode().strip()):.2f} W")
+        except:
+            print("Power Consumption: Not available.")
+
     except Exception as e:
         print(f"Error processing or predicting image {image_path}: {str(e)}")
         import traceback
         traceback.print_exc()
 
+# --- Accuracy Evaluation on Dataset ---
+# def evaluate_model_on_dataset(model, test_base_dir, image_size, class_labels):
+#     all_preds, all_true = [], []
+#     le = LabelEncoder()
+#     le.fit(class_labels)
+
+#     print("\n--- Evaluating Model on Test Dataset ---")
+#     for label in class_labels:
+#         class_dir = os.path.join(test_base_dir, label)
+#         if not os.path.isdir(class_dir):
+#             continue
+#         for file in os.listdir(class_dir):
+#             if file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+#                 try:
+#                     img_path = os.path.join(class_dir, file)
+#                     img = Image.open(img_path).convert('RGB')
+#                     img = img.resize((image_size, image_size), Image.Resampling.LANCZOS)
+#                     img_array = img_to_array(img) / 255.0
+#                     img_array = np.expand_dims(img_array, axis=0)
+#                     pred_probs = model.predict(img_array)
+#                     pred_index = np.argmax(pred_probs, axis=1)[0]
+#                     true_index = le.transform([label])[0]
+#                     all_preds.append(pred_index)
+#                     all_true.append(true_index)
+#                 except Exception as e:
+#                     print(f"Error: {img_path} -> {e}")
+
+#     if all_preds and all_true:
+#         acc = accuracy_score(all_true, all_preds)
+#         print(f"\n✅ Dataset Accuracy: {acc * 100:.2f}% ({len(all_true)} samples evaluated)")
+#         print("\nClassification Report:")
+#         print(classification_report(all_true, all_preds, target_names=class_labels))
+#     else:
+#         print("No valid images found to compute accuracy.")
+
 # --- Main Execution ---
-if _name_ == "_main_":
+if __name__ == "__main__":
     if os.path.exists(SAVED_MODEL_PATH):
         print(f"Loading saved model from: {SAVED_MODEL_PATH}...")
         try:
-            loaded_brain_tumor_model = load_model(SAVED_MODEL_PATH)
+            loaded_model = load_model(SAVED_MODEL_PATH)
             print("Model loaded successfully.")
-            loaded_brain_tumor_model.summary()
+            loaded_model.summary()
 
-            print("Select a brain MRI image file...")
-            Tk().withdraw()  # Hide the root tkinter window
-            new_image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")])
-
-            if not new_image_path:
-                print("No file selected. Exiting.")
+            # Prediction on single image
+            new_image_path = input("\nEnter path to a brain MRI image file: ").strip()
+            if new_image_path:
+                predict_new_image(new_image_path, loaded_model, IMAGE_SIZE, CLASS_LABELS)
             else:
-                print(f"Selected file: {new_image_path}")
-                predict_new_image(new_image_path, loaded_brain_tumor_model, IMAGE_SIZE, CLASS_LABELS)
+                print("No file selected for single prediction.")
+
+            # Dataset Accuracy Evaluation
+           # evaluate_model_on_dataset(loaded_model, TEST_DIR, IMAGE_SIZE, CLASS_LABELS)
 
         except Exception as e:
             print(f"Error loading model: {e}")
@@ -93,4 +154,3 @@ if _name_ == "_main_":
             traceback.print_exc()
     else:
         print(f"CRITICAL ERROR: Model file not found at {SAVED_MODEL_PATH}")
-        print("Please ensure the path is correct and the model file exists.")
